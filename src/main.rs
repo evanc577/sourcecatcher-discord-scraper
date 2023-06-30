@@ -113,7 +113,8 @@ impl TypeMapKey for WatchedChannels {
 }
 
 async fn read_config() -> Config {
-    let mut f = tokio::fs::File::open("config.toml").await.unwrap();
+    let file_name = std::env::args_os().nth(1).unwrap();
+    let mut f = tokio::fs::File::open(file_name).await.unwrap();
     let mut config_str = String::new();
     f.read_to_string(&mut config_str).await.unwrap();
     toml::from_str(&config_str).unwrap()
