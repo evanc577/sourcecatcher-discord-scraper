@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet};
+use std::backtrace::{Backtrace, BacktraceStatus};
+use std::collections::{HashMap, BTreeSet};
 use std::sync::Arc;
 
 use once_cell::sync::Lazy;
@@ -41,7 +42,7 @@ impl EventHandler for Handler {
         begin_db_transaction(&mut conn).await;
 
         // Combine twitter users from all channels
-        let mut twitter_users = HashSet::new();
+        let mut twitter_users = BTreeSet::new();
         while let Some(res) = set.join_next().await {
             let (u, c) = res.unwrap().await;
             twitter_users.extend(u.into_iter());
@@ -58,7 +59,7 @@ impl EventHandler for Handler {
             println!("{}", twitter_user)
         }
 
-        // Shutdown the bot
+        // Shutdown the bot cleanly
         ctx.data
             .read()
             .await
@@ -73,6 +74,16 @@ impl EventHandler for Handler {
 
 #[tokio::main]
 async fn main() {
+    // exit the process on panic
+    std::panic::set_hook(Box::new(|info| {
+        let backtrace = Backtrace::capture();
+        eprintln!("{info}");
+        if matches!(backtrace.status(), BacktraceStatus::Captured) {
+            eprintln!("{backtrace}");
+        }
+        std::process::exit(1);
+    }));
+
     let config = read_config().await;
 
     let mut client = Client::builder(config.discord_token, GatewayIntents::empty())
@@ -88,9 +99,7 @@ async fn main() {
         data.insert::<ShardManagerContainer>(client.shard_manager.clone());
     }
 
-    if let Err(why) = client.start().await {
-        eprintln!("Client error: {:?}", why);
-    }
+    client.start().await.unwrap();
 }
 
 #[derive(Deserialize)]
@@ -156,8 +165,8 @@ async fn read_channel_history(
     ctx: Context,
     channel: ChannelId,
     after: Option<MessageId>,
-) -> (HashSet<String>, ChannelRow) {
-    let mut twitter_users = HashSet::new();
+) -> (BTreeSet<String>, ChannelRow) {
+    let mut twitter_users = BTreeSet::new();
     let mut last_processed_message = None;
 
     // Process all messages
@@ -191,7 +200,7 @@ async fn read_channel_history(
     (twitter_users, channel_row)
 }
 
-fn extract_twitter_users(content: &str) -> HashSet<String> {
+fn extract_twitter_users(content: &str) -> BTreeSet<String> {
     static RE: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"twitter\.com/(?P<user>.*?)/status/\d+").unwrap());
     RE.captures(content)
@@ -229,8 +238,8 @@ async fn update_db_channels(conn: &mut SqliteConnection, channel_row: ChannelRow
 
 async fn update_db_users_and_return_all(
     conn: &mut SqliteConnection,
-    mut twitter_users: HashSet<String>,
-) -> HashSet<String> {
+    mut twitter_users: BTreeSet<String>,
+) -> BTreeSet<String> {
     // Update table
     for user in twitter_users.iter() {
         sqlx::query!(
