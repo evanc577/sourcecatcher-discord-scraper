@@ -1,9 +1,11 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::Deserialize;
 use serenity::async_trait;
+use serenity::client::bridge::gateway::ShardManager;
 use serenity::futures::{StreamExt, TryStreamExt};
 use serenity::http::Http;
 use serenity::model::gateway::Ready;
@@ -21,10 +23,12 @@ impl EventHandler for Handler {
         eprintln!("{} is connected!", ready.user.name);
 
         // Read previously processed channels from database
+        eprintln!("Reading DB");
         let mut conn = SqliteConnection::connect("database.sqlite").await.unwrap();
         let saved_channels = saved_channels(&mut conn).await;
 
         // Read new messages from all channels
+        eprintln!("Reading channels");
         let mut set = JoinSet::new();
         for channel in ctx.data.read().await.get::<WatchedChannels>().unwrap() {
             let ctx = ctx.clone();
@@ -33,17 +37,37 @@ impl EventHandler for Handler {
             set.spawn(async move { read_channel_history(ctx, channel_id, after) });
         }
 
+        // Begin transaction now that we are going to be writing
+        begin_db_transaction(&mut conn).await;
+
         // Combine twitter users from all channels
         let mut twitter_users = HashSet::new();
         while let Some(res) = set.join_next().await {
             let (u, c) = res.unwrap().await;
             twitter_users.extend(u.into_iter());
-            update_db(&mut conn, c).await;
+            update_db_channels(&mut conn, c).await;
         }
 
-        for twitter_user in twitter_users {
+        // Update database with new users and return all users
+        let all_twitter_users = update_db_users_and_return_all(&mut conn, twitter_users).await;
+        commit_db_transaction(&mut conn).await;
+
+        // Print users
+        eprintln!("Printing users");
+        for twitter_user in all_twitter_users {
             println!("{}", twitter_user)
         }
+
+        // Shutdown the bot
+        ctx.data
+            .read()
+            .await
+            .get::<ShardManagerContainer>()
+            .unwrap()
+            .lock()
+            .await
+            .shutdown_all()
+            .await;
     }
 }
 
@@ -58,7 +82,10 @@ async fn main() {
 
     {
         let mut data = client.data.write().await;
+        // Add Discord channels to scrape from config file
         data.insert::<WatchedChannels>(config.watched_channels.0);
+        // Add shard manager so we can shutdown cleanly after completion
+        data.insert::<ShardManagerContainer>(client.shard_manager.clone());
     }
 
     if let Err(why) = client.start().await {
@@ -68,15 +95,21 @@ async fn main() {
 
 #[derive(Deserialize)]
 struct Config {
-    discord_token: Box<str>,
+    discord_token: String,
     watched_channels: WatchedChannels,
 }
 
+struct ShardManagerContainer;
+
+impl TypeMapKey for ShardManagerContainer {
+    type Value = Arc<Mutex<ShardManager>>;
+}
+
 #[derive(Deserialize)]
-struct WatchedChannels(Vec<Box<str>>);
+struct WatchedChannels(Vec<String>);
 
 impl TypeMapKey for WatchedChannels {
-    type Value = Vec<Box<str>>;
+    type Value = Vec<String>;
 }
 
 async fn read_config() -> Config {
@@ -95,7 +128,10 @@ impl From<SqlChannelRow> for ChannelRow {
     fn from(value: SqlChannelRow) -> Self {
         let channel: ChannelId = value.channel.parse::<u64>().unwrap().into();
         let message: MessageId = value.last_message.parse::<u64>().unwrap().into();
-        Self { channel, last_message: message }
+        Self {
+            channel,
+            last_message: message,
+        }
     }
 }
 
@@ -108,7 +144,10 @@ impl From<ChannelRow> for SqlChannelRow {
     fn from(value: ChannelRow) -> Self {
         let channel = value.channel.to_string();
         let message = value.last_message.to_string();
-        Self { channel, last_message: message }
+        Self {
+            channel,
+            last_message: message,
+        }
     }
 }
 
@@ -116,21 +155,15 @@ async fn read_channel_history(
     ctx: Context,
     channel: ChannelId,
     after: Option<MessageId>,
-) -> (HashSet<Box<str>>, ChannelRow) {
+) -> (HashSet<String>, ChannelRow) {
     let mut twitter_users = HashSet::new();
     let mut last_processed_message = None;
 
     // Process all messages
     let messages = MessagesIter::<Http>::stream(&ctx, channel);
     tokio::pin!(messages);
-    let mut count = 0;
     while let Some(message) = messages.next().await {
         let message = message.unwrap();
-
-        count += 1;
-        if count > 200 {
-            break;
-        }
 
         // Stop if reached already processed message
         if let Some(after) = after {
@@ -141,7 +174,12 @@ async fn read_channel_history(
 
         // Extract Twitter users
         twitter_users.extend(extract_twitter_users(&message.content).into_iter());
-        last_processed_message = Some(message.id);
+        last_processed_message = Some(
+            last_processed_message
+                .map(|m: MessageId| std::cmp::max(m.0, message.id.0))
+                .unwrap_or(message.id.0)
+                .into(),
+        );
     }
 
     let channel_row = ChannelRow {
@@ -152,12 +190,12 @@ async fn read_channel_history(
     (twitter_users, channel_row)
 }
 
-fn extract_twitter_users(content: &str) -> HashSet<Box<str>> {
+fn extract_twitter_users(content: &str) -> HashSet<String> {
     static RE: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"twitter\.com/(?P<user>.*?)/status/\d+").unwrap());
     RE.captures(content)
         .into_iter()
-        .map(|cap| cap.name("user").unwrap().as_str().into())
+        .map(|cap| cap.name("user").unwrap().as_str().to_lowercase())
         .collect()
 }
 
@@ -173,17 +211,59 @@ async fn saved_channels(conn: &mut SqliteConnection) -> HashMap<ChannelId, Messa
     saved_channels
 }
 
-async fn update_db(conn: &mut SqliteConnection, channel_row: ChannelRow) {
+async fn update_db_channels(conn: &mut SqliteConnection, channel_row: ChannelRow) {
     let channel = channel_row.channel.to_string();
     let message = channel_row.last_message.to_string();
     sqlx::query!(
         "INSERT INTO channels (channel, last_message)
-                 VALUES ($1, $2)
-                 ON CONFLICT(channel) DO UPDATE SET last_message=$2",
+         VALUES ($1, $2)
+         ON CONFLICT(channel) DO UPDATE SET last_message=$2",
         channel,
         message,
     )
     .execute(conn)
     .await
     .unwrap();
+}
+
+async fn update_db_users_and_return_all(
+    conn: &mut SqliteConnection,
+    mut twitter_users: HashSet<String>,
+) -> HashSet<String> {
+    // Update table
+    for user in twitter_users.iter() {
+        sqlx::query!(
+            "INSERT OR IGNORE INTO twitter_users (user)
+             VALUES ($1)",
+            user
+        )
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    }
+
+    // Get all twitter users
+    struct TwitterUsersRow {
+        user: String,
+    }
+    let mut rows = sqlx::query_as!(TwitterUsersRow, "SELECT user FROM twitter_users").fetch(conn);
+    while let Some(row) = rows.try_next().await.unwrap() {
+        twitter_users.insert(row.user);
+    }
+
+    twitter_users
+}
+
+async fn begin_db_transaction(conn: &mut SqliteConnection) {
+    sqlx::query!("BEGIN TRANSACTION")
+        .execute(conn)
+        .await
+        .unwrap();
+}
+
+async fn commit_db_transaction(conn: &mut SqliteConnection) {
+    sqlx::query!("COMMIT TRANSACTION")
+        .execute(conn)
+        .await
+        .unwrap();
 }

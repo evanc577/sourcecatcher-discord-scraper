@@ -24,7 +24,25 @@
     },
     "query": "SELECT * FROM channels"
   },
-  "6104b4b899d485ce82071edbca5a4b76d187c25036141d45f96b078520ed71c5": {
+  "711242135d6d672bee3b35b9416bb625fab32cc20eb268ede3329290db2291ad": {
+    "describe": {
+      "columns": [
+        {
+          "name": "user",
+          "ordinal": 0,
+          "type_info": "Text"
+        }
+      ],
+      "nullable": [
+        false
+      ],
+      "parameters": {
+        "Right": 0
+      }
+    },
+    "query": "SELECT user FROM twitter_users"
+  },
+  "8cc8837b38e83baf6b0350a6517fe4facf90c494659f6516dfd84d9f29c257d2": {
     "describe": {
       "columns": [],
       "nullable": [],
@@ -32,6 +50,36 @@
         "Right": 2
       }
     },
-    "query": "INSERT INTO channels (channel, last_message)\n                 VALUES ($1, $2)\n                 ON CONFLICT(channel) DO UPDATE SET last_message=$2"
+    "query": "INSERT INTO channels (channel, last_message)\n         VALUES ($1, $2)\n         ON CONFLICT(channel) DO UPDATE SET last_message=$2"
+  },
+  "bb93df2c6b017c587ca5880bb37f85fbe6a5c95e2fcdd6d2f40257fd926162bb": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
+        "Right": 0
+      }
+    },
+    "query": "BEGIN TRANSACTION"
+  },
+  "d43ef368ab2ac32538bc895ec625b0d189fa4eb0a851f655a69c4f968eebc324": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
+        "Right": 1
+      }
+    },
+    "query": "INSERT OR IGNORE INTO twitter_users (user)\n             VALUES ($1)"
+  },
+  "eb292b2caa8e3c8d3b5d58d86a202582cbf1bfd3c7524dbe62247b0603e804d6": {
+    "describe": {
+      "columns": [],
+      "nullable": [],
+      "parameters": {
+        "Right": 0
+      }
+    },
+    "query": "COMMIT TRANSACTION"
   }
 }
