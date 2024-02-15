@@ -190,6 +190,7 @@ async fn read_channel_history(
 
         // Extract tweets
         let tweets = extract_tweets(&message.content);
+        dbg!(&tweets);
         twitter_users.extend(tweets.iter().map(|t| t.user.clone()));
 
         // Fetch tweet info and print for every tweet
@@ -197,6 +198,7 @@ async fn read_channel_history(
             static TWEET_FETCHER: Lazy<TweetFetcher> = Lazy::new(|| TweetFetcher::new().unwrap());
             let synd_tweet = TWEET_FETCHER.fetch(tweet.id).await.unwrap();
             println!("{}", serde_json::to_string(&synd_tweet).unwrap());
+            eprintln!("{}", serde_json::to_string(&synd_tweet).unwrap());
         }
 
         last_processed_message = Some(
@@ -216,7 +218,7 @@ async fn read_channel_history(
     (twitter_users, channel_row)
 }
 
-#[derive(Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Ord, PartialOrd, Eq, PartialEq, Debug)]
 struct Tweet {
     user: String,
     id: u64,
