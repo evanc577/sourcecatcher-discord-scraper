@@ -1,5 +1,5 @@
 use std::backtrace::{Backtrace, BacktraceStatus};
-use std::collections::{HashMap, BTreeSet};
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use once_cell::sync::Lazy;
@@ -15,6 +15,7 @@ use serenity::prelude::*;
 use sqlx::{Connection, SqliteConnection};
 use tokio::io::AsyncReadExt;
 use tokio::task::JoinSet;
+use twitter_syndication::TweetFetcher;
 
 struct Handler;
 
@@ -50,14 +51,14 @@ impl EventHandler for Handler {
         }
 
         // Update database with new users and return all users
-        let all_twitter_users = update_db_users_and_return_all(&mut conn, twitter_users).await;
+        let _all_twitter_users = update_db_users_and_return_all(&mut conn, twitter_users).await;
         commit_db_transaction(&mut conn).await;
 
         // Print users
-        eprintln!("Printing users");
-        for twitter_user in all_twitter_users {
-            println!("{}", twitter_user)
-        }
+        // eprintln!("Printing users");
+        // for twitter_user in all_twitter_users {
+        //     println!("{}", twitter_user)
+        // }
 
         // Shutdown the bot cleanly
         ctx.data
@@ -172,8 +173,13 @@ async fn read_channel_history(
     // Process all messages
     let messages = MessagesIter::<Http>::stream(&ctx, channel);
     tokio::pin!(messages);
+    let mut i = 0;
     while let Some(message) = messages.next().await {
         let message = message.unwrap();
+        if i % 1000 == 0 {
+            eprintln!("heartbeat {}, {}", channel.0, message.id.0);
+        }
+        i += 1;
 
         // Stop if reached already processed message
         if let Some(after) = after {
@@ -182,8 +188,17 @@ async fn read_channel_history(
             }
         }
 
-        // Extract Twitter users
-        twitter_users.extend(extract_twitter_users(&message.content).into_iter());
+        // Extract tweets
+        let tweets = extract_tweets(&message.content);
+        twitter_users.extend(tweets.iter().map(|t| t.user.clone()));
+
+        // Fetch tweet info and print for every tweet
+        for tweet in tweets {
+            static TWEET_FETCHER: Lazy<TweetFetcher> = Lazy::new(|| TweetFetcher::new().unwrap());
+            let synd_tweet = TWEET_FETCHER.fetch(tweet.id).await.unwrap();
+            println!("{}", serde_json::to_string(&synd_tweet).unwrap());
+        }
+
         last_processed_message = Some(
             last_processed_message
                 .map(|m: MessageId| std::cmp::max(m.0, message.id.0))
@@ -191,6 +206,7 @@ async fn read_channel_history(
                 .into(),
         );
     }
+    eprintln!("channel finished {}", channel.0);
 
     let channel_row = ChannelRow {
         channel,
@@ -200,12 +216,22 @@ async fn read_channel_history(
     (twitter_users, channel_row)
 }
 
-fn extract_twitter_users(content: &str) -> BTreeSet<String> {
+#[derive(Ord, PartialOrd, Eq, PartialEq)]
+struct Tweet {
+    user: String,
+    id: u64,
+}
+
+fn extract_tweets(content: &str) -> BTreeSet<Tweet> {
     static RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"twitter\.com/(?P<user>.*?)/status/\d+").unwrap());
+        Lazy::new(|| Regex::new(r"twitter\.com/(?P<user>.*?)/status/(?P<id>\d+)").unwrap());
     RE.captures(content)
         .into_iter()
-        .map(|cap| cap.name("user").unwrap().as_str().to_lowercase())
+        .map(|cap| {
+            let user = cap.name("user").unwrap().as_str().to_lowercase();
+            let id = cap.name("id").unwrap().as_str().parse().unwrap();
+            Tweet { user, id }
+        })
         .collect()
 }
 
