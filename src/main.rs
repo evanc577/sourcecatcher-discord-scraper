@@ -191,18 +191,23 @@ async fn read_channel_history(
 
         // Extract tweets
         let tweets = extract_tweets(&message.content);
-        dbg!(&tweets);
+        if !tweets.is_empty() {
+            dbg!(&tweets);
+        }
         twitter_users.extend(tweets.iter().map(|t| t.user.clone()));
 
         // Fetch tweet info and print for every tweet
-        for tweet in tweets {
+        'tweets: for tweet in tweets {
             static TWEET_FETCHER: Lazy<TweetFetcher> = Lazy::new(|| TweetFetcher::new().unwrap());
-            let mut synd_tweet = None;
-            for i in 0..5 {
+            let mut retry_count = 0;
+            let synd_tweet = loop {
+                if retry_count >= 5 {
+                    // It's probably actually not available
+                    continue 'tweets;
+                }
                 match &TWEET_FETCHER.fetch(tweet.id).await {
                     Ok(t) => {
-                        synd_tweet = Some(t.clone());
-                        break;
+                        break t.clone();
                     }
                     outer @ Err(e) => {
                         if let Some(status) = e.status() {
@@ -214,8 +219,8 @@ async fn read_channel_history(
                         }
                     }
                 }
-            }
-            let synd_tweet = synd_tweet.unwrap();
+                retry_count += 1;
+            };
             println!("{}", serde_json::to_string(&synd_tweet).unwrap());
             eprintln!("{}", serde_json::to_string(&synd_tweet).unwrap());
         }
