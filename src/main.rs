@@ -1,6 +1,7 @@
 use std::backtrace::{Backtrace, BacktraceStatus};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
+use std::time::Duration;
 
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -8,7 +9,7 @@ use serde::Deserialize;
 use serenity::async_trait;
 use serenity::client::bridge::gateway::ShardManager;
 use serenity::futures::{StreamExt, TryStreamExt};
-use serenity::http::Http;
+use serenity::http::{Http, StatusCode};
 use serenity::model::gateway::Ready;
 use serenity::model::prelude::{ChannelId, MessageId, MessagesIter};
 use serenity::prelude::*;
@@ -196,7 +197,25 @@ async fn read_channel_history(
         // Fetch tweet info and print for every tweet
         for tweet in tweets {
             static TWEET_FETCHER: Lazy<TweetFetcher> = Lazy::new(|| TweetFetcher::new().unwrap());
-            let synd_tweet = TWEET_FETCHER.fetch(tweet.id).await.unwrap();
+            let mut synd_tweet = None;
+            for i in 0..5 {
+                match &TWEET_FETCHER.fetch(tweet.id).await {
+                    Ok(t) => {
+                        synd_tweet = Some(t.clone());
+                        break;
+                    }
+                    outer @ Err(e) => {
+                        if let Some(status) = e.status() {
+                            if status == StatusCode::NOT_FOUND {
+                                tokio::time::sleep(Duration::from_secs(5)).await;
+                                continue;
+                            }
+                            outer.as_ref().unwrap();
+                        }
+                    }
+                }
+            }
+            let synd_tweet = synd_tweet.unwrap();
             println!("{}", serde_json::to_string(&synd_tweet).unwrap());
             eprintln!("{}", serde_json::to_string(&synd_tweet).unwrap());
         }
@@ -226,7 +245,7 @@ struct Tweet {
 
 fn extract_tweets(content: &str) -> BTreeSet<Tweet> {
     static RE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"twitter\.com/(?P<user>.*?)/status/(?P<id>\d+)").unwrap());
+        Lazy::new(|| Regex::new(r"\b(twitter|x)\.com/(?P<user>.*?)/status/(?P<id>\d+)").unwrap());
     RE.captures(content)
         .into_iter()
         .map(|cap| {
