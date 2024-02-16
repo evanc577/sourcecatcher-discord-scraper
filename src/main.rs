@@ -214,6 +214,9 @@ async fn read_channel_history(
                             if status == StatusCode::NOT_FOUND {
                                 tokio::time::sleep(Duration::from_secs(5)).await;
                                 continue;
+                            } else if status.is_server_error() {
+                                eprintln!("error: tweet id {} status code: {}", tweet.id, status.as_u16());
+                                continue 'tweets;
                             }
                             outer.as_ref().unwrap();
                         }
