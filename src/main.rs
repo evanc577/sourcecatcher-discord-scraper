@@ -27,7 +27,8 @@ impl EventHandler for Handler {
 
         // Read previously processed channels from database
         eprintln!("Reading DB");
-        let mut conn = SqliteConnection::connect("database.sqlite").await.unwrap();
+        let db_file = ctx.data.read().await.get::<DbFile>().unwrap().to_owned();
+        let mut conn = SqliteConnection::connect(&db_file).await.unwrap();
         let saved_channels = saved_channels(&mut conn).await;
 
         // Read new messages from all channels
@@ -54,12 +55,6 @@ impl EventHandler for Handler {
         // Update database with new users and return all users
         let _all_twitter_users = update_db_users_and_return_all(&mut conn, twitter_users).await;
         commit_db_transaction(&mut conn).await;
-
-        // Print users
-        // eprintln!("Printing users");
-        // for twitter_user in all_twitter_users {
-        //     println!("{}", twitter_user)
-        // }
 
         // Shutdown the bot cleanly
         ctx.data
@@ -93,6 +88,8 @@ async fn main() {
 
     {
         let mut data = client.data.write().await;
+        // Add database file from config file
+        data.insert::<DbFile>(config.database_file);
         // Add Discord channels to scrape from config file
         data.insert::<WatchedChannels>(config.watched_channels.0);
         // Add shard manager so we can shutdown cleanly after completion
@@ -105,6 +102,7 @@ async fn main() {
 #[derive(Deserialize)]
 struct Config {
     discord_token: String,
+    database_file: String,
     watched_channels: WatchedChannels,
 }
 
@@ -119,6 +117,13 @@ struct WatchedChannels(Vec<String>);
 
 impl TypeMapKey for WatchedChannels {
     type Value = Vec<String>;
+}
+
+#[derive(Deserialize)]
+struct DbFile;
+
+impl TypeMapKey for DbFile {
+    type Value = String;
 }
 
 async fn read_config() -> Config {
