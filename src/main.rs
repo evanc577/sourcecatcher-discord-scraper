@@ -6,8 +6,8 @@ use std::time::Duration;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::Deserialize;
+use serenity::all::ShardManager;
 use serenity::async_trait;
-use serenity::client::bridge::gateway::ShardManager;
 use serenity::futures::{StreamExt, TryStreamExt};
 use serenity::http::{Http, StatusCode};
 use serenity::model::gateway::Ready;
@@ -67,8 +67,6 @@ impl EventHandler for Handler {
             .await
             .get::<ShardManagerContainer>()
             .unwrap()
-            .lock()
-            .await
             .shutdown_all()
             .await;
     }
@@ -113,7 +111,7 @@ struct Config {
 struct ShardManagerContainer;
 
 impl TypeMapKey for ShardManagerContainer {
-    type Value = Arc<Mutex<ShardManager>>;
+    type Value = Arc<ShardManager>;
 }
 
 #[derive(Deserialize)]
@@ -178,13 +176,13 @@ async fn read_channel_history(
     while let Some(message) = messages.next().await {
         let message = message.unwrap();
         if i % 1000 == 0 {
-            eprintln!("heartbeat {}, {}", channel.0, message.id.0);
+            eprintln!("heartbeat {}, {}", channel, message.id);
         }
         i += 1;
 
         // Stop if reached already processed message
         if let Some(after) = after {
-            if message.id.0 <= after.0 {
+            if message.id <= after {
                 break;
             }
         }
@@ -215,7 +213,11 @@ async fn read_channel_history(
                                 tokio::time::sleep(Duration::from_secs(5)).await;
                                 continue;
                             } else if status.is_server_error() {
-                                eprintln!("error: tweet id {} status code: {}", tweet.id, status.as_u16());
+                                eprintln!(
+                                    "error: tweet id {} status code: {}",
+                                    tweet.id,
+                                    status.as_u16()
+                                );
                                 continue 'tweets;
                             }
                             outer.as_ref().unwrap();
@@ -230,16 +232,15 @@ async fn read_channel_history(
 
         last_processed_message = Some(
             last_processed_message
-                .map(|m: MessageId| std::cmp::max(m.0, message.id.0))
-                .unwrap_or(message.id.0)
-                .into(),
+                .map(|m: MessageId| std::cmp::max(m, message.id))
+                .unwrap_or(message.id),
         );
     }
-    eprintln!("channel finished {}", channel.0);
+    eprintln!("channel finished {}", channel);
 
     let channel_row = ChannelRow {
         channel,
-        last_message: last_processed_message.unwrap_or(after.unwrap_or(MessageId(0))),
+        last_message: last_processed_message.unwrap_or(after.unwrap_or_default()),
     };
 
     (twitter_users, channel_row)
