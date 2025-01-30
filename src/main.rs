@@ -206,6 +206,7 @@ async fn read_channel_history(
             let synd_tweet = loop {
                 if retry_count >= 5 {
                     // It's probably actually not available
+                    eprintln!("error fetching tweet id: {}, skipping", tweet.id);
                     continue 'tweets;
                 }
                 match &TWEET_FETCHER.fetch(tweet.id).await {
@@ -214,16 +215,21 @@ async fn read_channel_history(
                     }
                     outer @ Err(e) => {
                         if let Some(status) = e.status() {
-                            if status == StatusCode::NOT_FOUND {
-                                tokio::time::sleep(Duration::from_secs(5)).await;
-                                continue;
-                            } else if status.is_server_error() {
-                                eprintln!(
-                                    "error: tweet id {} status code: {}",
-                                    tweet.id,
-                                    status.as_u16()
-                                );
-                                continue 'tweets;
+                            match status {
+                                StatusCode::NOT_FOUND | StatusCode::BAD_REQUEST => {
+                                    tokio::time::sleep(Duration::from_secs(5)).await;
+                                    continue;
+                                }
+                                _ => {
+                                    if status.is_server_error() {
+                                        eprintln!(
+                                            "error: tweet id {} status code: {}",
+                                            tweet.id,
+                                            status.as_u16()
+                                        );
+                                        continue 'tweets;
+                                    }
+                                }
                             }
                             outer.as_ref().unwrap();
                         }
