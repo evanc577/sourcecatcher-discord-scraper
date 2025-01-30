@@ -69,6 +69,8 @@ impl EventHandler for Handler {
 
 #[tokio::main]
 async fn main() {
+    console_subscriber::init();
+
     // exit the process on panic
     std::panic::set_hook(Box::new(|info| {
         let backtrace = Backtrace::capture();
