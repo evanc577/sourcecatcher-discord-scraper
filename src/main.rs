@@ -1,5 +1,7 @@
+use core::panic;
 use std::backtrace::{Backtrace, BacktraceStatus};
 use std::collections::{BTreeSet, HashMap};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,10 +22,20 @@ use twitter_syndication::TweetFetcher;
 
 struct Handler;
 
+static STARTED: AtomicBool = AtomicBool::new(false);
+
 #[async_trait]
 impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
-        eprintln!("{} is connected!", ready.user.name);
+        match STARTED.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => {
+                eprintln!("{} is connected!", ready.user.name);
+            }
+            Err(_) => {
+                eprintln!("Received another connect");
+                panic!();
+            }
+        }
 
         // Read previously processed channels from database
         eprintln!("Reading DB");
