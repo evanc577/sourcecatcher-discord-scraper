@@ -44,7 +44,7 @@ impl EventHandler for Handler {
         let saved_channels = saved_channels(&mut conn).await;
 
         // Read new messages from all channels
-        eprintln!("Reading channels");
+        eprintln!("Spawning channel readers");
         let mut set = JoinSet::new();
         for channel in ctx.data.read().await.get::<WatchedChannels>().unwrap() {
             let ctx = ctx.clone();
@@ -52,6 +52,8 @@ impl EventHandler for Handler {
             let after: Option<MessageId> = saved_channels.get(&channel_id).copied();
             set.spawn(async move { read_channel_history(ctx, channel_id, after) });
         }
+
+        eprintln!("Reading channels");
 
         // Begin transaction now that we are going to be writing
         begin_db_transaction(&mut conn).await;
@@ -185,6 +187,8 @@ async fn read_channel_history(
     channel: ChannelId,
     after: Option<MessageId>,
 ) -> (BTreeSet<String>, ChannelRow) {
+    eprintln!("read_channel_history() channel: {channel} after: {after:?}");
+
     let mut twitter_users = BTreeSet::new();
     let mut last_processed_message = None;
 
