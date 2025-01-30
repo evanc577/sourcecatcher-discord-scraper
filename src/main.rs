@@ -268,10 +268,21 @@ fn extract_tweets(content: &str) -> BTreeSet<Tweet> {
         Lazy::new(|| Regex::new(r"\b(twitter|x)\.com/(?P<user>.*?)/status/(?P<id>\d+)").unwrap());
     RE.captures(content)
         .into_iter()
-        .map(|cap| {
+        .filter_map(|cap| {
             let user = cap.name("user").unwrap().as_str().to_lowercase();
-            let id = cap.name("id").unwrap().as_str().parse().unwrap();
-            Tweet { user, id }
+            let id_str = cap.name("id").unwrap().as_str();
+            let id = match id_str.parse() {
+                Ok(id) => id,
+                Err(e) => {
+                    eprintln!(
+                        "Found invalid tweet link: {} error: {}",
+                        cap.get(0).unwrap().as_str(),
+                        e,
+                    );
+                    return None;
+                }
+            };
+            Some(Tweet { user, id })
         })
         .collect()
 }
