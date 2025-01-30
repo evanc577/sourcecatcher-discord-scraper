@@ -50,7 +50,7 @@ impl EventHandler for Handler {
             let ctx = ctx.clone();
             let channel_id: ChannelId = channel.parse::<u64>().unwrap().into();
             let after: Option<MessageId> = saved_channels.get(&channel_id).copied();
-            set.spawn(async move { read_channel_history(ctx, channel_id, after) });
+            set.spawn(async move { read_channel_history(ctx, channel_id, after).await });
         }
 
         eprintln!("Reading channels");
@@ -61,7 +61,7 @@ impl EventHandler for Handler {
         // Combine twitter users from all channels
         let mut twitter_users = BTreeSet::new();
         while let Some(res) = set.join_next().await {
-            let (u, c) = res.unwrap().await;
+            let (u, c) = res.unwrap();
             twitter_users.extend(u.into_iter());
             update_db_channels(&mut conn, c).await;
         }
