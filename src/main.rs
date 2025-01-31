@@ -6,8 +6,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use once_cell::sync::Lazy;
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
 use regex::Regex;
 use serde::Deserialize;
 use serenity::all::ShardManager;
@@ -191,10 +189,25 @@ async fn read_channel_history(
 ) -> (BTreeSet<String>, ChannelRow) {
     eprintln!("read_channel_history() channel: {channel} after: {after:?}");
 
-    static TWEET_FETCHER: Lazy<TweetFetcher> = Lazy::new(|| TweetFetcher::new().unwrap());
     let mut twitter_users = BTreeSet::new();
     let mut last_processed_message = None;
-    let mut rng = StdRng::from_os_rng();
+
+    let mut retry_tweets = Vec::new();
+
+    let mut do_fetch_tweet = |tweet: Tweet, fetch_tweet_result, retry_tweets: &mut Vec<Tweet>| {
+        match fetch_tweet_result {
+            FetchTweetResult::Ok(t) => {
+                println!("{}", serde_json::to_string(&t).unwrap());
+                eprintln!("{}", serde_json::to_string(&t).unwrap());
+                twitter_users.insert(tweet.user.clone());
+            }
+            FetchTweetResult::NotFound => {}
+            FetchTweetResult::Err(e) => panic!("{}", e),
+            FetchTweetResult::RateLimit => {
+                retry_tweets.push(tweet);
+            }
+        }
+    };
 
     // Process all messages
     let messages = MessagesIter::<Http>::stream(&ctx, channel);
@@ -214,70 +227,11 @@ async fn read_channel_history(
         if !tweets.is_empty() {
             eprintln!("read_channel_history() channel: {channel} found tweet: {tweets:#?}");
         }
-        twitter_users.extend(tweets.iter().map(|t| t.user.clone()));
 
         // Fetch tweet info and print for every tweet
-        'tweets: for tweet in tweets {
-            let mut synd_tweet = None;
-            for attempt in 0..10 {
-                match &TWEET_FETCHER.fetch(tweet.id).await {
-                    Ok(t) => {
-                        synd_tweet = Some(t.clone());
-                        break;
-                    }
-                    outer @ Err(e) => {
-                        if let Some(status) = e.status() {
-                            match status.as_u16() {
-                                404 => {
-                                    // Most likely a rate limit
-                                    eprintln!(
-                                        "fetch tweet {} error code {} (likely rate limit), retrying, attempt: {}",
-                                        tweet.id,
-                                        status.as_u16(),
-                                        attempt,
-                                    );
-
-                                    let sleep_ms: u64 = 60_000 + rng.random_range(0..30_000);
-                                    tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
-                                    continue;
-                                }
-                                400 => {
-                                    // Broken tweet
-                                    eprintln!(
-                                        "fetch tweet {} error code {} (likely broken tweet)",
-                                        tweet.id,
-                                        status.as_u16(),
-                                    );
-                                    continue 'tweets;
-                                }
-                                500..600 => {
-                                    // Some kind of server error
-                                    eprintln!(
-                                        "error: tweet id {} status code: {} (server error)",
-                                        tweet.id,
-                                        status.as_u16()
-                                    );
-                                    continue 'tweets;
-                                }
-                                _ => {
-                                    // This is a real unhandled error, panic
-                                    outer.as_ref().unwrap();
-                                    unreachable!();
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            if synd_tweet.is_none() {
-                // It's probably actually not available
-                eprintln!("error fetching tweet id: {}, skipping", tweet.id);
-                continue 'tweets;
-            }
-            let synd_tweet = synd_tweet.unwrap();
-
-            println!("{}", serde_json::to_string(&synd_tweet).unwrap());
-            eprintln!("{}", serde_json::to_string(&synd_tweet).unwrap());
+        for tweet in tweets {
+            let fetch_tweet_result = fetch_tweet_info(&tweet).await;
+            do_fetch_tweet(tweet, fetch_tweet_result, &mut retry_tweets);
         }
 
         last_processed_message = Some(
@@ -286,17 +240,88 @@ async fn read_channel_history(
                 .unwrap_or(message.id),
         );
     }
-    eprintln!("read_channel_history() finished channel: {channel}");
+
+    // Retry any tweets that were rate limited
+    let mut retry_count = 0;
+    while !retry_tweets.is_empty() || retry_count < 4 {
+        eprintln!(
+            "read_channel_history() channel: {channel} retry fetch {} tweets after 10m sleep",
+            retry_tweets.len()
+        );
+        tokio::time::sleep(Duration::from_secs(10 * 60)).await;
+
+        let tmp = retry_tweets.clone();
+        retry_tweets.clear();
+
+        for tweet in tmp {
+            let fetch_tweet_result = fetch_tweet_info(&tweet).await;
+            do_fetch_tweet(tweet, fetch_tweet_result, &mut retry_tweets);
+        }
+
+        retry_count += 1;
+    }
 
     let channel_row = ChannelRow {
         channel,
         last_message: last_processed_message.unwrap_or(after.unwrap_or_default()),
     };
 
+    eprintln!("read_channel_history() finished channel: {channel}");
     (twitter_users, channel_row)
 }
 
-#[derive(Ord, PartialOrd, Eq, PartialEq, Debug)]
+#[allow(clippy::large_enum_variant)]
+enum FetchTweetResult {
+    Ok(twitter_syndication::tweet::Tweet),
+    NotFound,
+    RateLimit,
+    Err(twitter_syndication::TweetFetcherError),
+}
+
+async fn fetch_tweet_info(tweet: &Tweet) -> FetchTweetResult {
+    static TWEET_FETCHER: Lazy<TweetFetcher> = Lazy::new(|| TweetFetcher::new().unwrap());
+    match TWEET_FETCHER.fetch(tweet.id).await {
+        Ok(t) => FetchTweetResult::Ok(t),
+        Err(e) => {
+            if let Some(status) = e.status() {
+                match status.as_u16() {
+                    404 => {
+                        // Most likely a rate limit
+                        eprintln!(
+                            "fetch tweet {} error code {} (likely rate limit)",
+                            tweet.id,
+                            status.as_u16(),
+                        );
+                        return FetchTweetResult::RateLimit;
+                    }
+                    400 => {
+                        // Broken tweet
+                        eprintln!(
+                            "fetch tweet {} error code {} (likely broken tweet)",
+                            tweet.id,
+                            status.as_u16(),
+                        );
+                        return FetchTweetResult::NotFound;
+                    }
+                    500..600 => {
+                        // Some kind of server error
+                        eprintln!(
+                            "error: tweet id {} status code: {} (server error)",
+                            tweet.id,
+                            status.as_u16()
+                        );
+                        return FetchTweetResult::NotFound;
+                    }
+                    _ => {}
+                }
+            }
+            // This is a real unhandled error
+            FetchTweetResult::Err(e)
+        }
+    }
+}
+
+#[derive(Ord, PartialOrd, Eq, PartialEq, Clone, Debug)]
 struct Tweet {
     user: String,
     id: u64,
