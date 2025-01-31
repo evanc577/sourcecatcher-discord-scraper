@@ -18,15 +18,15 @@ use serenity::prelude::*;
 use sqlx::{Connection, SqliteConnection};
 use tokio::io::AsyncReadExt;
 use tokio::task::JoinSet;
+use twitter_syndication::tweet::TweetType as SyndicationTweetType;
 use twitter_syndication::TweetFetcher;
 
 struct Handler;
 
-static STARTED: AtomicBool = AtomicBool::new(false);
-
 #[async_trait]
 impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
+        static STARTED: AtomicBool = AtomicBool::new(false);
         match STARTED.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst) {
             Ok(_) => {
                 eprintln!("{} is connected!", ready.user.name);
@@ -187,7 +187,9 @@ async fn read_channel_history(
     channel: ChannelId,
     after: Option<MessageId>,
 ) -> (BTreeSet<String>, ChannelRow) {
-    eprintln!("read_channel_history() channel: {channel} after: {after:?}");
+    let channel_name = channel.name(&ctx).await.unwrap();
+    let channel_text = format!("{channel} ({channel_name})");
+    eprintln!("read_channel_history() channel: {channel_text} after: {after:?}");
 
     let mut twitter_users = BTreeSet::new();
     let mut last_processed_message = None;
@@ -205,7 +207,7 @@ async fn read_channel_history(
                 twitter_users.insert(tweet.user.clone());
             }
             FetchTweetResult::NotFound => {}
-            FetchTweetResult::Err(e) => panic!("tweet: {tweet:#?} {e:#?}"),
+            FetchTweetResult::Err(e) => panic!("tweet: {tweet:?} {e:?}"),
             FetchTweetResult::RateLimit => {
                 retry_tweets.push(tweet);
             }
@@ -227,12 +229,10 @@ async fn read_channel_history(
 
         // Extract tweets
         let tweets = extract_tweets(&message.content);
-        if !tweets.is_empty() {
-            eprintln!("read_channel_history() channel: {channel} found tweet: {tweets:#?}");
-        }
 
         // Fetch tweet info and print for every tweet
         for tweet in tweets {
+            eprintln!("read_channel_history() channel: {channel_text} found tweet: {tweet:?}");
             let fetch_tweet_result = fetch_tweet_info(&tweet).await;
             do_fetch_tweet(tweet, fetch_tweet_result, &mut retry_tweets);
         }
@@ -245,12 +245,19 @@ async fn read_channel_history(
     }
 
     // Retry scraping any tweets that were rate limited after a delay
-    let mut retry_count = 0;
-    while !retry_tweets.is_empty() && retry_count < 4 {
+    let mut attempt_count = 0;
+    let total_attempt_count = 3;
+    while !retry_tweets.is_empty() && attempt_count < total_attempt_count {
+        attempt_count += 1;
+
         const SLEEP_MIN: u64 = 10;
         eprintln!(
-            "read_channel_history() channel: {channel} retry fetch {} tweets after {SLEEP_MIN}m sleep",
-            retry_tweets.len()
+            "read_channel_history() channel: {} retry (attempt {}/{}) fetch {} tweets after {}m sleep",
+            channel_text,
+            attempt_count,
+            total_attempt_count,
+            retry_tweets.len(),
+            SLEEP_MIN,
         );
         tokio::time::sleep(Duration::from_secs(SLEEP_MIN * 60)).await;
 
@@ -261,11 +268,9 @@ async fn read_channel_history(
             let fetch_tweet_result = fetch_tweet_info(&tweet).await;
             do_fetch_tweet(tweet, fetch_tweet_result, &mut retry_tweets);
         }
-
-        retry_count += 1;
     }
 
-    eprintln!("read_channel_history() finished channel: {channel}");
+    eprintln!("read_channel_history() finished channel: {channel_text}");
     let channel_row = ChannelRow {
         channel,
         last_message: last_processed_message.unwrap_or(after.unwrap_or_default()),
@@ -284,8 +289,8 @@ enum FetchTweetResult {
 async fn fetch_tweet_info(tweet: &Tweet) -> FetchTweetResult {
     static TWEET_FETCHER: Lazy<TweetFetcher> = Lazy::new(|| TweetFetcher::new().unwrap());
     match TWEET_FETCHER.fetch(tweet.id).await {
-        Ok(Some(t)) => FetchTweetResult::Ok(t),
-        Ok(None) => FetchTweetResult::NotFound,
+        Ok(SyndicationTweetType::Tweet(t)) => FetchTweetResult::Ok(t),
+        Ok(SyndicationTweetType::TweetTombstone) => FetchTweetResult::NotFound,
         Err(e) => {
             if let Some(status) = e.status() {
                 match status.as_u16() {

@@ -2657,7 +2657,7 @@ dependencies = [
 [[package]]
 name = "twitter-syndication"
 version = "0.1.0"
-source = "git+https://github.com/evanc577/twitter-syndication.git#61bd31036090f9ad805446dfbae5bc25a4cdc9e1"
+source = "git+https://github.com/evanc577/twitter-syndication.git#3a42e199826d5206f6fba2c0538b75fc34404197"
 dependencies = [
  "once_cell",
  "reqwest 0.12.12",
