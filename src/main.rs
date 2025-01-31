@@ -219,7 +219,7 @@ async fn read_channel_history(
         // Fetch tweet info and print for every tweet
         'tweets: for tweet in tweets {
             let mut synd_tweet = None;
-            for attempt in 0..10 {
+            for attempt in 0..5 {
                 match &TWEET_FETCHER.fetch(tweet.id).await {
                     Ok(t) => {
                         synd_tweet = Some(t.clone());
@@ -228,7 +228,7 @@ async fn read_channel_history(
                     outer @ Err(e) => {
                         if let Some(status) = e.status() {
                             match status {
-                                StatusCode::NOT_FOUND => {
+                                StatusCode::NOT_FOUND | StatusCode::BAD_REQUEST => {
                                     eprintln!(
                                         "fetch tweet {} error code {}, retrying, attempt: {}",
                                         tweet.id,
