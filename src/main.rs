@@ -219,7 +219,7 @@ async fn read_channel_history(
         // Fetch tweet info and print for every tweet
         'tweets: for tweet in tweets {
             let mut synd_tweet = None;
-            for attempt in 0..5 {
+            for attempt in 0..10 {
                 match &TWEET_FETCHER.fetch(tweet.id).await {
                     Ok(t) => {
                         synd_tweet = Some(t.clone());
@@ -228,33 +228,43 @@ async fn read_channel_history(
                     outer @ Err(e) => {
                         if let Some(status) = e.status() {
                             match status.as_u16() {
-                                400 | 404 => {
+                                404 => {
+                                    // Most likely a rate limit
                                     eprintln!(
-                                        "fetch tweet {} error code {}, retrying, attempt: {}",
+                                        "fetch tweet {} error code {} (likely rate limit), retrying, attempt: {}",
                                         tweet.id,
                                         status.as_u16(),
                                         attempt,
                                     );
 
-                                    let sleep_ms: u64 = (1000 << std::cmp::min(attempt, 4))
-                                        + rng.random_range(0..5000);
+                                    let sleep_ms: u64 = 60_000 + rng.random_range(0..30_000);
                                     tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
                                     continue;
                                 }
+                                400 => {
+                                    // Broken tweet
+                                    eprintln!(
+                                        "fetch tweet {} error code {} (likely broken tweet)",
+                                        tweet.id,
+                                        status.as_u16(),
+                                    );
+                                    continue 'tweets;
+                                }
+                                500..600 => {
+                                    // Some kind of server error
+                                    eprintln!(
+                                        "error: tweet id {} status code: {} (server error)",
+                                        tweet.id,
+                                        status.as_u16()
+                                    );
+                                    continue 'tweets;
+                                }
                                 _ => {
-                                    if status.is_server_error() {
-                                        eprintln!(
-                                            "error: tweet id {} status code: {}",
-                                            tweet.id,
-                                            status.as_u16()
-                                        );
-                                        continue 'tweets;
-                                    }
+                                    // This is a real unhandled error, panic
+                                    outer.as_ref().unwrap();
+                                    unreachable!();
                                 }
                             }
-
-                            // This is a real unhandled error, panic
-                            outer.as_ref().unwrap();
                         }
                     }
                 }
