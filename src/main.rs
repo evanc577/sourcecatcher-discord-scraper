@@ -202,7 +202,7 @@ async fn read_channel_history(
                 twitter_users.insert(tweet.user.clone());
             }
             FetchTweetResult::NotFound => {}
-            FetchTweetResult::Err(e) => panic!("{}", e),
+            FetchTweetResult::Err(e) => panic!("tweet: {tweet:#?} {e:#?}"),
             FetchTweetResult::RateLimit => {
                 retry_tweets.push(tweet);
             }
