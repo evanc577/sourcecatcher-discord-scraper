@@ -192,8 +192,11 @@ async fn read_channel_history(
     let mut twitter_users = BTreeSet::new();
     let mut last_processed_message = None;
 
+    // Twitter will sometimes return 404 for a specific tweet when rate limited, keep track of all
+    // 404ed tweets and retry them later after a few minutes
     let mut retry_tweets = Vec::new();
 
+    // Helper function to process twitter responses
     let mut do_fetch_tweet = |tweet: Tweet, fetch_tweet_result, retry_tweets: &mut Vec<Tweet>| {
         match fetch_tweet_result {
             FetchTweetResult::Ok(t) => {
@@ -209,7 +212,7 @@ async fn read_channel_history(
         }
     };
 
-    // Process all messages
+    // For each discord message in the channel, do first pass of twitter scrape
     let messages = MessagesIter::<Http>::stream(&ctx, channel);
     tokio::pin!(messages);
     while let Some(message) = messages.next().await {
@@ -241,14 +244,15 @@ async fn read_channel_history(
         );
     }
 
-    // Retry any tweets that were rate limited
+    // Retry scraping any tweets that were rate limited after a delay
     let mut retry_count = 0;
-    while !retry_tweets.is_empty() || retry_count < 4 {
+    while !retry_tweets.is_empty() && retry_count < 4 {
+        const SLEEP_MIN: u64 = 10;
         eprintln!(
-            "read_channel_history() channel: {channel} retry fetch {} tweets after 10m sleep",
+            "read_channel_history() channel: {channel} retry fetch {} tweets after {SLEEP_MIN}m sleep",
             retry_tweets.len()
         );
-        tokio::time::sleep(Duration::from_secs(10 * 60)).await;
+        tokio::time::sleep(Duration::from_secs(SLEEP_MIN * 60)).await;
 
         let tmp = retry_tweets.clone();
         retry_tweets.clear();
@@ -261,12 +265,11 @@ async fn read_channel_history(
         retry_count += 1;
     }
 
+    eprintln!("read_channel_history() finished channel: {channel}");
     let channel_row = ChannelRow {
         channel,
         last_message: last_processed_message.unwrap_or(after.unwrap_or_default()),
     };
-
-    eprintln!("read_channel_history() finished channel: {channel}");
     (twitter_users, channel_row)
 }
 
