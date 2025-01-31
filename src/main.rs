@@ -195,13 +195,8 @@ async fn read_channel_history(
     // Process all messages
     let messages = MessagesIter::<Http>::stream(&ctx, channel);
     tokio::pin!(messages);
-    let mut i = 0;
     while let Some(message) = messages.next().await {
         let message = message.unwrap();
-        if i % 1000 == 0 {
-            eprintln!("heartbeat {}, {}", channel, message.id);
-        }
-        i += 1;
 
         // Stop if reached already processed message
         if let Some(after) = after {
@@ -213,28 +208,30 @@ async fn read_channel_history(
         // Extract tweets
         let tweets = extract_tweets(&message.content);
         if !tweets.is_empty() {
-            dbg!(&tweets);
+            eprintln!("read_channel_history() channel: {channel} found tweet: {tweets:#?}");
         }
         twitter_users.extend(tweets.iter().map(|t| t.user.clone()));
 
         // Fetch tweet info and print for every tweet
         'tweets: for tweet in tweets {
             static TWEET_FETCHER: Lazy<TweetFetcher> = Lazy::new(|| TweetFetcher::new().unwrap());
-            let mut retry_count = 0;
-            let synd_tweet = loop {
-                if retry_count >= 5 {
-                    // It's probably actually not available
-                    eprintln!("error fetching tweet id: {}, skipping", tweet.id);
-                    continue 'tweets;
-                }
+            let mut synd_tweet = None;
+            for attempt in 0..4 {
                 match &TWEET_FETCHER.fetch(tweet.id).await {
                     Ok(t) => {
-                        break t.clone();
+                        synd_tweet = Some(t.clone());
+                        break;
                     }
                     outer @ Err(e) => {
                         if let Some(status) = e.status() {
                             match status {
                                 StatusCode::NOT_FOUND | StatusCode::BAD_REQUEST => {
+                                    eprintln!(
+                                        "fetch tweet {} error code {}, retrying, attempt: {}",
+                                        tweet.id,
+                                        status.as_u16(),
+                                        attempt,
+                                    );
                                     tokio::time::sleep(Duration::from_secs(5)).await;
                                     continue;
                                 }
@@ -249,12 +246,20 @@ async fn read_channel_history(
                                     }
                                 }
                             }
+
+                            // This is a real unhandled error, panic
                             outer.as_ref().unwrap();
                         }
                     }
                 }
-                retry_count += 1;
-            };
+            }
+            if synd_tweet.is_none() {
+                // It's probably actually not available
+                eprintln!("error fetching tweet id: {}, skipping", tweet.id);
+                continue 'tweets;
+            }
+            let synd_tweet = synd_tweet.unwrap();
+
             println!("{}", serde_json::to_string(&synd_tweet).unwrap());
             eprintln!("{}", serde_json::to_string(&synd_tweet).unwrap());
         }
@@ -265,7 +270,7 @@ async fn read_channel_history(
                 .unwrap_or(message.id),
         );
     }
-    eprintln!("channel finished {}", channel);
+    eprintln!("read_channel_history() finished channel: {channel}");
 
     let channel_row = ChannelRow {
         channel,
