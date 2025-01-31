@@ -6,6 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use once_cell::sync::Lazy;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use regex::Regex;
 use serde::Deserialize;
 use serenity::all::ShardManager;
@@ -189,8 +191,10 @@ async fn read_channel_history(
 ) -> (BTreeSet<String>, ChannelRow) {
     eprintln!("read_channel_history() channel: {channel} after: {after:?}");
 
+    static TWEET_FETCHER: Lazy<TweetFetcher> = Lazy::new(|| TweetFetcher::new().unwrap());
     let mut twitter_users = BTreeSet::new();
     let mut last_processed_message = None;
+    let mut rng = StdRng::from_os_rng();
 
     // Process all messages
     let messages = MessagesIter::<Http>::stream(&ctx, channel);
@@ -214,9 +218,8 @@ async fn read_channel_history(
 
         // Fetch tweet info and print for every tweet
         'tweets: for tweet in tweets {
-            static TWEET_FETCHER: Lazy<TweetFetcher> = Lazy::new(|| TweetFetcher::new().unwrap());
             let mut synd_tweet = None;
-            for attempt in 0..4 {
+            for attempt in 0..10 {
                 match &TWEET_FETCHER.fetch(tweet.id).await {
                     Ok(t) => {
                         synd_tweet = Some(t.clone());
@@ -225,14 +228,17 @@ async fn read_channel_history(
                     outer @ Err(e) => {
                         if let Some(status) = e.status() {
                             match status {
-                                StatusCode::NOT_FOUND | StatusCode::BAD_REQUEST => {
+                                StatusCode::NOT_FOUND => {
                                     eprintln!(
                                         "fetch tweet {} error code {}, retrying, attempt: {}",
                                         tweet.id,
                                         status.as_u16(),
                                         attempt,
                                     );
-                                    tokio::time::sleep(Duration::from_secs(5)).await;
+
+                                    let sleep_ms: u64 = (1000 << std::cmp::min(attempt, 4))
+                                        + rng.random_range(0..5000);
+                                    tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
                                     continue;
                                 }
                                 _ => {
