@@ -281,7 +281,8 @@ enum FetchTweetResult {
 async fn fetch_tweet_info(tweet: &Tweet) -> FetchTweetResult {
     static TWEET_FETCHER: Lazy<TweetFetcher> = Lazy::new(|| TweetFetcher::new().unwrap());
     match TWEET_FETCHER.fetch(tweet.id).await {
-        Ok(t) => FetchTweetResult::Ok(t),
+        Ok(Some(t)) => FetchTweetResult::Ok(t),
+        Ok(None) => FetchTweetResult::NotFound,
         Err(e) => {
             if let Some(status) = e.status() {
                 match status.as_u16() {
