@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serenity::all::ShardManager;
 use serenity::async_trait;
 use serenity::futures::{StreamExt, TryStreamExt};
-use serenity::http::{Http, StatusCode};
+use serenity::http::Http;
 use serenity::model::gateway::Ready;
 use serenity::model::prelude::{ChannelId, MessageId, MessagesIter};
 use serenity::prelude::*;
@@ -227,8 +227,8 @@ async fn read_channel_history(
                     }
                     outer @ Err(e) => {
                         if let Some(status) = e.status() {
-                            match status {
-                                StatusCode::NOT_FOUND | StatusCode::BAD_REQUEST => {
+                            match status.as_u16() {
+                                400 | 404 => {
                                     eprintln!(
                                         "fetch tweet {} error code {}, retrying, attempt: {}",
                                         tweet.id,
